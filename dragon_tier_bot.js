@@ -201,30 +201,253 @@ async function autoRunRandomTest() {
 
 // Event: Interaction Create
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-
-  try {
-    if (interaction.commandName === 'setup') {
-      await handleSetup(interaction);
-    } else if (interaction.commandName === 'addplayer') {
-      await handleAddPlayer(interaction);
-    } else if (interaction.commandName === 'randomtest') {
-      await handleRandomTest(interaction);
-    } else if (interaction.commandName === 'assignrank') {
-      await handleAssignRank(interaction);
-    } else if (interaction.commandName === 'playerinfo') {
-      await handlePlayerInfo(interaction);
-    } else if (interaction.commandName === 'leaderboard') {
-      await handleLeaderboard(interaction);
-    } else if (interaction.commandName === 'resetplayer') {
-      await handleResetPlayer(interaction);
+  // Handle slash commands
+  if (interaction.isChatInputCommand()) {
+    try {
+      if (interaction.commandName === 'setup') {
+        await handleSetup(interaction);
+      } else if (interaction.commandName === 'addplayer') {
+        await handleAddPlayer(interaction);
+      } else if (interaction.commandName === 'randomtest') {
+        await handleRandomTest(interaction);
+      } else if (interaction.commandName === 'assignrank') {
+        await handleAssignRank(interaction);
+      } else if (interaction.commandName === 'playerinfo') {
+        await handlePlayerInfo(interaction);
+      } else if (interaction.commandName === 'leaderboard') {
+        await handleLeaderboard(interaction);
+      } else if (interaction.commandName === 'resetplayer') {
+        await handleResetPlayer(interaction);
+      }
+    } catch (error) {
+      console.error('Command error:', error);
+      await interaction.reply({
+        content: '❌ An error occurred while processing your command.',
+        ephemeral: true
+      }).catch(() => {});
     }
-  } catch (error) {
-    console.error('Command error:', error);
-    await interaction.reply({
-      content: '❌ An error occurred while processing your command.',
-      ephemeral: true
-    }).catch(() => {});
+  }
+
+  // Handle button clicks
+  if (interaction.isButton()) {
+    try {
+      if (interaction.customId.startsWith('assign_')) {
+        const userId = interaction.customId.replace('assign_', '');
+        
+        const players = loadPlayers();
+
+        if (!players[userId]) {
+          return await interaction.reply({
+            content: '❌ This player is not registered.',
+            ephemeral: true
+          });
+        }
+
+        // Auto-assign random tier
+        const randomIndex = Math.floor(Math.random() * TIER_RANKS.length);
+        const tierData = TIER_RANKS[randomIndex];
+
+        const oldRank = players[userId].rank;
+        players[userId].rank = tierData.tier;
+        players[userId].testCount += 1;
+        players[userId].lastTested = new Date().toISOString();
+
+        savePlayers(players);
+
+        const TESTER_ROLE_ID = '1489673758082990350';
+
+        // Generate spaced-out test times
+        const now = new Date();
+        const testTimes = [];
+        for (let i = 0; i < players[userId].testCount; i++) {
+          const testTime = new Date(now.getTime() - (i * 30 * 60 * 1000));
+          testTimes.push(testTime.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }));
+        }
+
+        const embed = new EmbedBuilder()
+          .setColor(tierData.color)
+          .setTitle(`✅ Tier Assigned`)
+          .setThumbnail(`https://craftheads.net/render/avatar/${players[userId].minecraftIGN}`)
+          .addFields(
+            { name: 'Player', value: `<@${userId}>`, inline: false },
+            { name: 'Previous Tier', value: oldRank, inline: true },
+            { name: 'New Tier', value: tierData.display, inline: true },
+            { name: 'Test Count', value: `${players[userId].testCount}`, inline: true },
+            { name: 'Test Times', value: testTimes.join('\n'), inline: false },
+            { name: 'Assigned By', value: `<@&${TESTER_ROLE_ID}>`, inline: false }
+          )
+          .setFooter({ text: '⚡ Dragon Tier Testing' })
+          .setTimestamp();
+
+        // Send to announcement channel
+        const config = loadConfig();
+        if (config.announcementChannelId) {
+          const channel = await client.channels.fetch(config.announcementChannelId).catch(() => null);
+          if (channel && channel.isTextBased()) {
+            await channel.send({ embeds: [embed] }).catch(err => console.error('Error sending to announcement channel:', err));
+          }
+        }
+
+        await interaction.reply({ embeds: [embed], ephemeral: true });
+      } else if (interaction.customId === 'randomtest_again') {
+        // Defer for the new random test
+        await interaction.deferReply();
+        
+        const config = loadConfig();
+        const guild = await client.guilds.fetch(interaction.guildId);
+        
+        if (!guild) {
+          return await interaction.editReply('❌ Guild not found.');
+        }
+
+        console.log(`🔍 Config verified role ID: ${config.verifiedRoleId}`);
+
+        let verifiedMembers = [];
+        
+        // If verified role is configured, filter by role
+        if (config.verifiedRoleId) {
+          try {
+            console.log('📥 Fetching all guild members...');
+            const allMembers = await guild.members.fetch();
+            console.log(`✅ Fetched ${allMembers.size} members total`);
+            
+            const role = guild.roles.cache.get(config.verifiedRoleId);
+            console.log(`🔎 Looking for role ${config.verifiedRoleId}: ${role ? `Found - "${role.name}"` : 'Not found'}`);
+            
+            if (role) {
+              const membersWithRole = allMembers.filter(member => 
+                member.roles.cache.has(config.verifiedRoleId) && !member.user.bot
+              );
+              console.log(`👥 Found ${membersWithRole.size} members with verified role`);
+              
+              verifiedMembers = Array.from(membersWithRole.values()).map(member => member.user);
+            }
+          } catch (fetchError) {
+            console.error('❌ Error fetching members:', fetchError.message);
+          }
+        }
+        
+        // Fallback to channel messages
+        if (verifiedMembers.length === 0) {
+          console.log('📌 Falling back to channel message search...');
+          try {
+            const channel = await client.channels.fetch(TEST_CHANNEL_ID);
+            
+            if (channel.isTextBased()) {
+              const userIds = new Set();
+              let lastId = undefined;
+
+              for (let i = 0; i < 10; i++) {
+                const fetchedMessages = await channel.messages.fetch({ limit: 100, before: lastId });
+                if (fetchedMessages.size === 0) break;
+                
+                fetchedMessages.forEach(msg => {
+                  if (!msg.author.bot) {
+                    userIds.add(msg.author.id);
+                  }
+                });
+                
+                lastId = fetchedMessages.last()?.id;
+              }
+
+              if (userIds.size > 0) {
+                const userArray = Array.from(userIds);
+                const randomUserId = userArray[Math.floor(Math.random() * userArray.length)];
+                verifiedMembers = [await client.users.fetch(randomUserId)];
+              }
+            }
+          } catch (err) {
+            console.error('Error in fallback:', err);
+          }
+        }
+
+        if (verifiedMembers.length === 0) {
+          return await interaction.editReply('❌ No verified users found.');
+        }
+
+        // Pick random user
+        const randomUser = verifiedMembers[Math.floor(Math.random() * verifiedMembers.length)];
+        console.log(`🎯 Selected user: ${randomUser.tag} (${randomUser.id})`);
+        
+        const players = loadPlayers();
+
+        // Generate random test results
+        const testResults = {
+          combatSkill: Math.floor(Math.random() * 100) + 1,
+          accuracy: Math.floor(Math.random() * 100) + 1,
+          positioning: Math.floor(Math.random() * 100) + 1,
+          timing: Math.floor(Math.random() * 100) + 1,
+          consistency: Math.floor(Math.random() * 100) + 1
+        };
+
+        // Add player if not already registered
+        if (!players[randomUser.id]) {
+          players[randomUser.id] = {
+            discordId: randomUser.id,
+            discordTag: randomUser.tag,
+            minecraftIGN: randomUser.username,
+            rank: 'Unranked',
+            testCount: 0,
+            wins: 0,
+            losses: 0,
+            dateAdded: new Date().toISOString(),
+            verified: true
+          };
+          savePlayers(players);
+        }
+
+        const player = players[randomUser.id];
+
+        const embed = new EmbedBuilder()
+          .setColor('#FF00FF')
+          .setTitle('🎯 Random Player Selected - Test Results')
+          .setThumbnail(`https://craftheads.net/render/avatar/${player.minecraftIGN}`)
+          .addFields(
+            { name: 'Player Selected', value: `<@${randomUser.id}>`, inline: false },
+            { name: 'Current Rank', value: player.rank, inline: true },
+            { name: 'Tests Completed', value: `${player.testCount}`, inline: true },
+            { name: '━━━━━━━━━━━━', value: 'Test Results', inline: false },
+            { name: '⚔️ Combat Skill', value: `${testResults.combatSkill}%`, inline: true },
+            { name: '🎯 Accuracy', value: `${testResults.accuracy}%`, inline: true },
+            { name: '📍 Positioning', value: `${testResults.positioning}%`, inline: true },
+            { name: '⏱️ Timing', value: `${testResults.timing}%`, inline: true },
+            { name: '🔁 Consistency', value: `${testResults.consistency}%`, inline: true },
+            { name: '━━━━━━━━━━━━', value: '\u200b', inline: false }
+          )
+          .setFooter({ text: 'Click "Assign Tier" to assign a random tier and post results' });
+
+        const buttons = new ActionRowBuilder()
+          .addComponents(
+            new ButtonBuilder()
+              .setCustomId(`assign_${randomUser.id}`)
+              .setLabel('✅ Assign Tier')
+              .setStyle(ButtonStyle.Primary),
+            new ButtonBuilder()
+              .setCustomId('randomtest_again')
+              .setLabel('🔄 Pick Another')
+              .setStyle(ButtonStyle.Secondary)
+          );
+
+        await interaction.editReply({ embeds: [embed], components: [buttons] });
+      }
+    } catch (error) {
+      console.error('Button error:', error);
+      try {
+        if (interaction.replied || interaction.deferred) {
+          await interaction.editReply({
+            content: `❌ Error: ${error.message}`,
+            components: []
+          });
+        } else {
+          await interaction.reply({
+            content: `❌ Error: ${error.message}`,
+            ephemeral: true
+          });
+        }
+      } catch (replyError) {
+        console.error('Could not send error reply:', replyError);
+      }
+    }
   }
 });
 
@@ -310,21 +533,21 @@ async function handleRandomTest(interaction) {
     // If verified role is configured, filter by role
     if (config.verifiedRoleId) {
       try {
-        console.log('📥 Fetching guild members (this may take a moment)...');
-        // Fetch members with proper limits to avoid rate limiting
-        await guild.members.fetch({ limit: 1000 });
-        console.log(`✅ Fetched ${guild.members.cache.size} members`);
+        console.log('📥 Fetching all guild members (this may take a moment)...');
+        // Fetch ALL members in chunks to get complete list
+        const allMembers = await guild.members.fetch();
+        console.log(`✅ Fetched ${allMembers.size} members total`);
         
         const role = guild.roles.cache.get(config.verifiedRoleId);
-        console.log(`🔎 Looking for role ${config.verifiedRoleId}: ${role ? 'Found' : 'Not found'}`);
+        console.log(`🔎 Looking for role ${config.verifiedRoleId}: ${role ? `Found - "${role.name}"` : 'Not found'}`);
         
         if (role) {
-          const membersWithRole = guild.members.cache.filter(member => 
+          const membersWithRole = allMembers.filter(member => 
             member.roles.cache.has(config.verifiedRoleId) && !member.user.bot
           );
           console.log(`👥 Found ${membersWithRole.size} members with verified role`);
           
-          verifiedMembers = membersWithRole.map(member => member.user);
+          verifiedMembers = Array.from(membersWithRole.values()).map(member => member.user);
         } else {
           console.warn(`⚠️ Role ${config.verifiedRoleId} not found in guild`);
         }
@@ -364,7 +587,8 @@ async function handleRandomTest(interaction) {
       }
 
       console.log(`✅ Found ${userIds.size} users from channel messages`);
-      const randomUserId = Array.from(userIds)[Math.floor(Math.random() * userIds.size)];
+      const userArray = Array.from(userIds);
+      const randomUserId = userArray[Math.floor(Math.random() * userArray.length)];
       verifiedMembers = [await client.users.fetch(randomUserId)];
     }
 
@@ -372,8 +596,11 @@ async function handleRandomTest(interaction) {
       return await interaction.editReply('❌ No verified users found.');
     }
 
+    // Pick a truly random user from the full list
     console.log(`✅ Picking from ${verifiedMembers.length} verified members`);
     const randomUser = verifiedMembers[Math.floor(Math.random() * verifiedMembers.length)];
+    console.log(`🎯 Selected user: ${randomUser.tag} (${randomUser.id})`);
+    
     const players = loadPlayers();
 
     // Generate random test results
@@ -419,17 +646,17 @@ async function handleRandomTest(interaction) {
         { name: '🔁 Consistency', value: `${testResults.consistency}%`, inline: true },
         { name: '━━━━━━━━━━━━', value: '\u200b', inline: false }
       )
-      .setFooter({ text: 'Use /assignrank to assign a tier based on results' });
+      .setFooter({ text: 'Click "Assign Tier" to assign a random tier and post results' });
 
     const buttons = new ActionRowBuilder()
       .addComponents(
         new ButtonBuilder()
           .setCustomId(`assign_${randomUser.id}`)
-          .setLabel('Assign Tier')
+          .setLabel('✅ Assign Tier')
           .setStyle(ButtonStyle.Primary),
         new ButtonBuilder()
           .setCustomId('randomtest_again')
-          .setLabel('Pick Another')
+          .setLabel('🔄 Pick Another')
           .setStyle(ButtonStyle.Secondary)
       );
 
