@@ -198,6 +198,9 @@ async function autoRunRandomTest() {
     console.error('Error in auto-test:', error);
   }
 }
+
+// Event: Interaction Create
+client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   try {
