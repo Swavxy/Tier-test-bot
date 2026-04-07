@@ -1,0 +1,20 @@
+{
+  "name": "dragon-tier-bot",
+  "version": "1.0.0",
+  "description": "Discord bot for Dragon Tier PvP Testing",
+  "main": "dragon_tier_bot.js",
+  "scripts": {
+    "start": "node dragon_tier_bot.js",
+    "dev": "node dragon_tier_bot.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "tier"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^14.14.0"
+  }
+}
