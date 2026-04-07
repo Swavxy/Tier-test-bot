@@ -303,23 +303,39 @@ async function handleRandomTest(interaction) {
       return await interaction.editReply('❌ Guild not found.');
     }
 
-    // Fetch all members (with caching)
-    await guild.members.fetch();
-    
+    console.log(`🔍 Config verified role ID: ${config.verifiedRoleId}`);
+
     let verifiedMembers = [];
     
     // If verified role is configured, filter by role
     if (config.verifiedRoleId) {
-      const role = guild.roles.cache.get(config.verifiedRoleId);
-      if (role) {
-        verifiedMembers = guild.members.cache.filter(member => 
-          member.roles.has(config.verifiedRoleId) && !member.user.bot
-        ).map(member => member.user);
+      try {
+        console.log('📥 Fetching guild members (this may take a moment)...');
+        // Fetch members with proper limits to avoid rate limiting
+        await guild.members.fetch({ limit: 1000 });
+        console.log(`✅ Fetched ${guild.members.cache.size} members`);
+        
+        const role = guild.roles.cache.get(config.verifiedRoleId);
+        console.log(`🔎 Looking for role ${config.verifiedRoleId}: ${role ? 'Found' : 'Not found'}`);
+        
+        if (role) {
+          const membersWithRole = guild.members.cache.filter(member => 
+            member.roles.cache.has(config.verifiedRoleId) && !member.user.bot
+          );
+          console.log(`👥 Found ${membersWithRole.size} members with verified role`);
+          
+          verifiedMembers = membersWithRole.map(member => member.user);
+        } else {
+          console.warn(`⚠️ Role ${config.verifiedRoleId} not found in guild`);
+        }
+      } catch (fetchError) {
+        console.error('❌ Error fetching members:', fetchError.message);
       }
     }
     
-    // Fallback: fetch from channel messages if no verified role set
+    // Fallback: fetch from channel messages if no verified role set or members found
     if (verifiedMembers.length === 0) {
+      console.log('📌 Falling back to channel message search...');
       const channel = await client.channels.fetch(TEST_CHANNEL_ID);
       
       if (!channel.isTextBased()) {
@@ -347,6 +363,7 @@ async function handleRandomTest(interaction) {
         return await interaction.editReply('❌ No verified users found. Make sure to set the verified role with /setup or add users to the test channel.');
       }
 
+      console.log(`✅ Found ${userIds.size} users from channel messages`);
       const randomUserId = Array.from(userIds)[Math.floor(Math.random() * userIds.size)];
       verifiedMembers = [await client.users.fetch(randomUserId)];
     }
@@ -355,6 +372,7 @@ async function handleRandomTest(interaction) {
       return await interaction.editReply('❌ No verified users found.');
     }
 
+    console.log(`✅ Picking from ${verifiedMembers.length} verified members`);
     const randomUser = verifiedMembers[Math.floor(Math.random() * verifiedMembers.length)];
     const players = loadPlayers();
 
@@ -418,7 +436,7 @@ async function handleRandomTest(interaction) {
     await interaction.editReply({ embeds: [embed], components: [buttons] });
   } catch (error) {
     console.error('Error in randomtest:', error);
-    await interaction.editReply('❌ Error fetching verified members. Make sure the bot has permissions and the verified role is set correctly.');
+    await interaction.editReply(`❌ Error: ${error.message}`);
   }
 }
 
